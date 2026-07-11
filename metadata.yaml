@@ -1,11 +1,12 @@
-name: astrbot_plugin_smart_segmentation
-display_name: 智能分段
-desc: 使用 LLM 将 AstrBot 主回复自然拆分为多条聊天消息，并异步补发剩余段。
-version: v0.1.0
-author: 薄暝
-repo: https://github.com/exynos967/astrbot_plugin_smart_segmentation
+name: astrbot_plugin_smart_segmentation_maintained
+display_name: 智能分段 (个人维护版)
+desc: 智能分段插件个人维护版。深度适配本地轻量小模型（如 Qwen3.5-2B），解决小模型格式崩溃与复读幻觉。
+version: v1.0.0
+author: 薄暝 (原作者) / EVOL2333awa (维护者)
+repo: https://github.com/你的GitHub用户名/你的仓库名称
 astrbot_version: ">=4.16,<5"
 tags:
   - segmentation
   - llm
   - reply
+  - local-llm
