@@ -1,6 +1,6 @@
-# input_file_0.py
 """智能分段纯逻辑工具。"""
 from __future__ import annotations
+
 import ast
 import hashlib
 import json
@@ -15,12 +15,11 @@ THINKING_TAG_RE = re.compile(
 )
 THINKING_BOUNDARY_RE = re.compile(r"</?thinking>", flags=re.IGNORECASE)
 
-# 协议与工具调用伪影清洗正则（兼容未闭合标签）
+# 协议与工具调用伪影清洗正则（已移除对通用 ``` 代码块的粗暴拦截，仅清除特定工具调用和系统标签）
 PROTOCOL_ARTIFACTS_RE = re.compile(
     r"("
     r"<tool_call>[\s\S]*?(?:</tool_call>|$)"
     r"|<function_call>[\s\S]*?(?:</function_call>|$)"
-    r"|```(?:json|python|xml|yaml)?[\s\S]*?(?:```|$)"
     r"|\[Tooltip:[^\]]*(?:\]|$)"
     r"|\[System:[^\]]*(?:\]|$)"
     r")",
@@ -40,6 +39,12 @@ STYLE_GUIDES = {
     "active": "活泼的发消息风格，喜欢发短消息连击，反应词和正文分开发。",
 }
 
+
+def is_ascii_alnum(char: str) -> bool:
+    """仅判定字符是否为 ASCII 范围内的字母或数字，避免中文字符干扰。"""
+    return char.isascii() and char.isalnum()
+
+
 # 颜文字与纯标点识别器
 def is_kaomoji_or_pure_punct(text: str) -> bool:
     """判定文本是否为纯标点、连续标点或短颜文字，用于防止其孤立成段。"""
@@ -48,25 +53,30 @@ def is_kaomoji_or_pure_punct(text: str) -> bool:
     text = text.strip()
     if not text:
         return False
-
-    # 1. 纯标点检测
+        
+    # 1. 含有中文汉字则绝不判定为纯颜文字，防止语义短句被强行向前合并
+    if re.search(r"[\u4e00-\u9fa5]", text):
+        return False
+        
+    # 2. 纯标点检测
     puncts = set("。！？!?~.……,，、;；:：'\"()（）【】[]{}<>《》 ")
     if all(c in puncts for c in text):
         return True
-
-    # 2. 常见颜文字特征检测 (长度较短且包含大量符号组合)
+        
+    # 3. 常见颜文字特征检测 (排除了中文后，再检测连续符号)
     if len(text) <= 10 and re.search(r"[><^°¯\*_\-\|/\\]{2,}", text):
         return True
-
-    # 3. 经典字母颜文字白名单
+        
+    # 4. 经典字母颜文字白名单
     if text.lower() in ["qwq", "qaq", "ovo", "uwu", "orz", "t_t", "q_q", "x_x", "tv_t"]:
         return True
-
+        
     return False
+
 
 # 基础清洗与检测工具
 def strip_thinking_content(text: str) -> str:
-    """移除 thinking 标签、Tool Call 伪影及代码块，只保留最终可见正文。"""
+    """移除 thinking 标签、Tool Call 伪影，只保留最终可见正文（保留通用代码块）。"""
     if not text:
         return ""
     cleaned_text = THINKING_TAG_RE.sub("", str(text))
@@ -74,35 +84,53 @@ def strip_thinking_content(text: str) -> str:
     cleaned_text = PROTOCOL_ARTIFACTS_RE.sub("", cleaned_text)
     return cleaned_text.strip()
 
+
 def is_non_natural_language(text: str) -> bool:
-    """检测文本是否为 JSON、代码等非自然语言。"""
+    """检测文本是否为完整的 JSON、纯代码等非自然语言。"""
     if not text:
         return False
     stripped = text.strip()
+    
+    # 1. 优先全局守卫：汉字占比超 10% 绝不判定为非自然语言，防止结构化文档退化为整条发送
+    chinese_char_count = len(re.findall(r"[\u4e00-\u9fa5]", stripped))
+    if len(stripped) > 0 and (chinese_char_count / len(stripped)) >= 0.10:
+        return False
+        
+    # 2. 结构化 JSON 解析校验
     if (stripped.startswith("{") and stripped.endswith("}")) or \
        (stripped.startswith("[") and stripped.endswith("]")):
-        return True
+        try:
+            json.loads(stripped)
+            return True
+        except Exception:
+            pass
+            
+    # 3. 纯代码块特征保护
     if "```" in stripped:
         return True
+        
+    # 4. 强特征配置字段
     if '"mcpServers"' in stripped or '"active":' in stripped or '"command":' in stripped:
         return True
-
+        
+    # 5. 特殊字符密度综合判定（已移除多余的二次中文校验）
     special_chars = set('{}[]":;,=<>')
     special_count = sum(1 for char in stripped if char in special_chars)
-    if len(stripped) > 20 and (special_count / len(stripped)) > 0.10:
+    if len(stripped) > 20 and (special_count / len(stripped)) > 0.15:
         return True
+        
     return False
+
 
 def is_markdown_heavy(text: str) -> bool:
     """
     检测文本是否包含大量 Markdown 格式特征。
-
     其判定结果供调用方决策是否放弃句末标点切分，改用双换行段落拆分，以保护内部格式。
     """
     lines = [line for line in text.splitlines() if line.strip()]
     if not lines:
         return False
-
+        
     md_patterns = [
         r"^#{1,6}\s", r"^[\*\-\+]\s", r"^\d+\.\s", r"^>\s",
         r"^`{3}", r"^\|.*\|", r"^[-*_]{3,}$",
@@ -114,12 +142,14 @@ def is_markdown_heavy(text: str) -> bool:
             if re.match(pattern, stripped):
                 md_line_count += 1
                 break
-
+                
     if len(lines) > 0 and (md_line_count / len(lines)) > 0.20:
         return True
     if md_line_count >= 2:
         return True
+        
     return False
+
 
 def extract_json_array_text(raw_text: str) -> str:
     """从模型返回中提取 JSON 数组文本。"""
@@ -128,32 +158,37 @@ def extract_json_array_text(raw_text: str) -> str:
         return result_text.split("```json", 1)[1].split("```", 1)[0].strip()
     if "```" in result_text:
         return result_text.split("```", 1)[1].split("```", 1)[0].strip()
-
+        
     start = result_text.find("[")
     end = result_text.rfind("]")
     if start != -1 and end != -1 and start < end:
         return result_text[start : end + 1]
+        
     return result_text
+
 
 def robust_json_loads(json_str: str) -> Any:
     """针对小模型进行高容错率的 JSON 解析，利用 ast.literal_eval 兼容单引号。"""
     s = json_str.strip()
     if not s:
         raise ValueError("Empty string")
+        
     try:
         return json.loads(s)
     except json.JSONDecodeError:
         pass
-
+        
     s = s.replace("“", '"').replace("”", '"')
     s = s.replace("‘", "'").replace("’", "'")
+    
     try:
         return ast.literal_eval(s)
     except Exception:
         pass
-
+        
     s = re.sub(r",\s*]$", "]", s)
     return json.loads(s)
+
 
 def normalize_segments(segments: Any, max_segments: int | str = 0) -> list[str]:
     """标准化并自动扁平化段落。使用空格拼接防止文本粘连。"""
@@ -161,13 +196,14 @@ def normalize_segments(segments: Any, max_segments: int | str = 0) -> list[str]:
         max_segs = int(max_segments) if max_segments is not None else 0
     except (ValueError, TypeError):
         max_segs = 0
-
+        
     if not isinstance(segments, list):
         if isinstance(segments, str):
             return [segments.strip()] if segments.strip() else []
         return []
-
+        
     result: list[str] = []
+    
     def flatten(item: Any):
         if isinstance(item, list):
             for sub_item in item:
@@ -176,31 +212,39 @@ def normalize_segments(segments: Any, max_segments: int | str = 0) -> list[str]:
             item_str = str(item).strip()
             if item_str:
                 result.append(item_str)
-
+                
     flatten(segments)
+    
     if max_segs > 0 and len(result) > max_segs:
         head = result[: max_segs - 1]
         tail = " ".join(result[max_segs - 1 :])
         result = head + [tail]
+        
     return result
+
 
 def is_action_only_text(text: str) -> bool:
     """判断文本是否整体被一对括号包裹。"""
     stripped = str(text or "").strip()
     if len(stripped) < 2:
         return False
+        
     for open_bracket, close_bracket in BRACKET_PAIRS:
         if not stripped.startswith(open_bracket) or not stripped.endswith(close_bracket):
             continue
+            
         depth = 0
         for index, char in enumerate(stripped):
             if char == open_bracket:
                 depth += 1
             elif char == close_bracket:
                 depth -= 1
-                if depth == 0:
-                    return index == len(stripped) - 1
+                
+            if depth == 0:
+                return index == len(stripped) - 1
+                
     return False
+
 
 def has_unbalanced_brackets(text: str) -> bool:
     """判断文本中是否存在未闭合的括号。"""
@@ -209,10 +253,12 @@ def has_unbalanced_brackets(text: str) -> bool:
             return True
     return False
 
+
 def merge_segments_balancing_brackets(segments: list[str]) -> list[str]:
     """合并或自愈括号平衡，防止因模型丢括号导致全局粘连合并。"""
     if not segments:
         return list(segments)
+        
     fixed_segments = []
     for segment in segments:
         s = segment
@@ -224,53 +270,64 @@ def merge_segments_balancing_brackets(segments: list[str]) -> list[str]:
             elif close_count > open_count:
                 s = open_bracket * (close_count - open_count) + s
         fixed_segments.append(s)
+        
     return fixed_segments
 
+
 def split_text_at_brackets(text: str) -> list[str]:
-    """把单段文本按括号边界拆成片段。优化：避免切碎代码函数（如 split()）。"""
+    """把单段文本按括号边界拆成片段。已修复中文括号前置字符导致的失效问题。"""
     if not text:
         return []
+        
     parts: list[str] = []
     buffer: list[str] = []
     index = 0
+    
     while index < len(text):
         char = text[index]
         matched_pair: tuple[str, str] | None = None
+        
         for open_bracket, close_bracket in BRACKET_PAIRS:
             if char == open_bracket:
-                if index > 0 and (text[index - 1].isalnum() or text[index - 1] in "._"):
+                # 修复中文失效：仅在 ASCII 字母数字、点、下划线后，才判定为程序函数调用并不予切分
+                if index > 0 and (is_ascii_alnum(text[index - 1]) or text[index - 1] in "._"):
                     break
                 matched_pair = (open_bracket, close_bracket)
                 break
+                
         if matched_pair is None:
             buffer.append(char)
             index += 1
             continue
-
+            
         open_bracket, close_bracket = matched_pair
         depth = 1
         scan_index = index + 1
+        
         while scan_index < len(text) and depth > 0:
             if text[scan_index] == open_bracket:
                 depth += 1
             elif text[scan_index] == close_bracket:
                 depth -= 1
             scan_index += 1
-
+            
         if depth != 0:
             buffer.append(text[index:])
             index = len(text)
             break
-
+            
         if buffer:
             parts.append("".join(buffer))
             buffer = []
+            
         parts.append(text[index:scan_index])
         index = scan_index
-
+        
     if buffer:
         parts.append("".join(buffer))
+        
     return parts
+
 
 def split_segments_at_bracket_boundaries(
     segments: list[str],
@@ -282,25 +339,27 @@ def split_segments_at_bracket_boundaries(
         max_segs = int(max_segments) if max_segments is not None else 0
     except (ValueError, TypeError):
         max_segs = 0
-
+        
     if not segments:
         return list(segments)
-
+        
     result: list[str] = []
     for segment in segments:
         for part in split_text_at_brackets(segment):
             stripped_part = part.strip()
             if stripped_part and not re.match(r"^[_\-\*\s]{3,}$", stripped_part):
                 result.append(stripped_part)
-
+                
     if not result:
         return result
-
+        
     if max_segs > 0 and len(result) > max_segs:
         head = result[: max_segs - 1]
         tail = " ".join(result[max_segs - 1 :])
         result = head + [tail]
+        
     return result
+
 
 def normalize_response_text_for_key(text: str) -> str:
     """归一化用于查找预分段缓存的文本。"""
@@ -309,12 +368,14 @@ def normalize_response_text_for_key(text: str) -> str:
         return ""
     return " ".join(cleaned.split())
 
+
 def hash_normalized_text(text: str) -> str:
     """对归一化后的文本做稳定哈希。"""
     normalized = normalize_response_text_for_key(text)
     if not normalized:
         return ""
     return hashlib.sha1(normalized.encode("utf-8")).hexdigest()
+
 
 # Prompt 工程防御
 def build_segmentation_prompt(text: str, style: str, max_segments: int) -> str:
@@ -326,10 +387,10 @@ def build_segmentation_prompt(text: str, style: str, max_segments: int) -> str:
 【切分方法】
 请将输入文本中的所有换行（回车）全部替换为分割符号 " | "（即空格、竖线、空格），输出为单行文本。
 【强制规则】
-1. 绝对不能改写、遗漏或补充原文中的任何文字和括号，必须保留原文的所有字词。
-2. 绝对不能换行！输出中绝对不允许包含 \n 或任何实际换行，必须整合成一整行纯文本。
-3. 去掉每条消息末尾的句号。
-4. [核心保护] 绝对禁止将连续的标点符号（如“？！”、“...”、“。~”）或颜文字（如“>_<”、“T_T”、“qwq”、“(>_<)”）从主句中切开！它们必须与前文保持在同一条消息中。
+绝对不能改写、遗漏或补充原文中的任何文字和括号，必须保留原文的所有字词。
+绝对不能换行！输出中绝对不允许包含 \n 或任何实际换行，必须整合成一整行纯文本。
+去掉每条消息末尾的句号。
+[核心保护] 绝对禁止将连续的标点符号（如“？！”、“...”、“。~”）或颜文字（如“><”、“T_T”、“qwq”、“(><)”）从主句中切开！它们必须与前文保持在同一条消息中。
 【示例 1：短日常对话】
 输入：
 （开心）今天发工资了。
@@ -338,12 +399,13 @@ def build_segmentation_prompt(text: str, style: str, max_segments: int) -> str:
 （开心） | 今天发工资了 | 要不要一起去吃大餐
 【示例 2：包含颜文字与连续标点】
 输入：
-欸？！>_<
+欸？！><
 今天天气真好...qwq
 输出：
-欸？！>_< | 今天天气真好...qwq
+欸？！>< | 今天天气真好...qwq
 请对以下文本进行分段处理：
 {text}"""
+
 
 # 核心解析与兜底逻辑
 def parse_segments_from_model_output(
@@ -357,12 +419,12 @@ def parse_segments_from_model_output(
         max_segs = int(max_segments) if max_segments is not None else 0
     except (ValueError, TypeError):
         max_segs = 0
-
+        
     try:
         cleaned = strip_thinking_content(raw_text).strip()
         cleaned = cleaned.replace("(", "（").replace(")", "）")
         cleaned = cleaned.replace("[", "【").replace("]", "】")
-
+        
         if "|" in cleaned:
             raw_segs = re.split(r"\s*\|\s*", cleaned)
             segments = []
@@ -376,9 +438,9 @@ def parse_segments_from_model_output(
             segments = robust_json_loads(json_text)
         else:
             segments = [line.strip() for line in cleaned.splitlines() if line.strip()]
-
+            
         normalized = normalize_segments(segments, max_segments=max_segs)
-
+        
         # 防御大模型切碎颜文字的后处理缝合
         final_segs = []
         for seg in normalized:
@@ -387,23 +449,23 @@ def parse_segments_from_model_output(
             else:
                 final_segs.append(seg)
         normalized = final_segs
-
-        # 复读Few-shot幻觉检测与降级机制
+        
+        # 复读 Few-shot 幻觉检测与降级机制
         joined_result = "".join(normalized)
         hallucination_keywords = ["今天发工资了", "要不要一起去吃大餐", "今天天气真好", "公园散步", "突然下雨了", "真是不走运"]
         if any(kw in joined_result and kw not in fallback_text for kw in hallucination_keywords):
             raise ValueError("Detected few-shot hallucination")
-
+            
     except Exception:
         fallback = strip_thinking_content(fallback_text).strip()
         return local_fallback_split(fallback, max_segs)
-
+        
     balanced = merge_segments_balancing_brackets(normalized)
     split_result = split_segments_at_bracket_boundaries(
         balanced,
         max_segments=max_segs,
     )
-
+    
     # 防止大模型或括号切分将颜文字剥离
     final_merged = []
     for seg in split_result:
@@ -411,8 +473,9 @@ def parse_segments_from_model_output(
             final_merged[-1] += seg
         else:
             final_merged.append(seg)
-
+            
     return final_merged
+
 
 def calculate_send_delay(
     segment: str,
@@ -429,16 +492,14 @@ def calculate_send_delay(
     normalized_delay += random.uniform(0.0, 0.15)
     return max(0.0, min(max_d, normalized_delay))
 
+
 def local_fallback_split(raw_text: str, max_segs: int) -> list[str]:
-    """终极自愈兜底：本地纯逻辑高精切分。"""
+    """终极自愈兜底：本地纯逻辑高精切分（已优化 Markdown 笔记与非自然语言守卫顺序）。"""
     if not raw_text:
         return []
-
-    # 整体非自然语言检测 (JSON/纯代码)，直接整段发送
-    if is_non_natural_language(raw_text):
-        return [raw_text.strip()]
-
-    # 整体 Markdown 笔记检测，按段落（双换行）切分，保护内部格式不被句号切碎
+        
+    # 1. 先检测整体是否为 Markdown 笔记，按段落（双换行）切分，保护内部格式
+    # 调整后，即便 Markdown 中嵌有 JSON/配置/代码块，也不会被错误识别成纯“非自然语言”跳过 Markdown 段落拆分
     if is_markdown_heavy(raw_text):
         paragraphs = re.split(r'\n[ \t]*\n', raw_text.strip())
         segments = [p.strip() for p in paragraphs if p.strip()]
@@ -449,14 +510,18 @@ def local_fallback_split(raw_text: str, max_segs: int) -> list[str]:
             tail = "\n\n".join(segments[max_segs - 1 :])
             segments = head + [tail]
         return segments
-
+        
+    # 2. 整体非自然语言检测 (纯 JSON/纯代码)，直接整段发送 (已强化 json 解析和低汉字密度过滤校验)
+    if is_non_natural_language(raw_text):
+        return [raw_text.strip()]
+        
     # 常规自然语言切分 (包含预处理代码块/JSON块打包)
     raw_lines = [line for line in raw_text.splitlines() if line.strip()]
     merged_lines = []
     buffer = []
     in_block = False
     block_type = None
-
+    
     for line in raw_lines:
         stripped = line.strip()
         if not in_block:
@@ -484,22 +549,22 @@ def local_fallback_split(raw_text: str, max_segs: int) -> list[str]:
                     merged_lines.append("\n".join(buffer))
                     buffer = []
                     in_block = False
-
+                    
     if buffer:
         merged_lines.append("\n".join(buffer))
-
+        
     sentence_split_lines = []
     for line in merged_lines:
         if "\n" in line or (line.startswith("{") and line.endswith("}")) or (line.startswith("[") and line.endswith("]")):
             sentence_split_lines.append(line)
             continue
-
+            
         parts = []
         current = []
         depth = 0
         i = 0
         n = len(line)
-
+        
         while i < n:
             char = line[i]
             if char in "（(【[":
@@ -512,12 +577,12 @@ def local_fallback_split(raw_text: str, max_segs: int) -> list[str]:
                 current.append(char)
                 i += 1
                 continue
-
+                
             if depth > 0:
                 current.append(char)
                 i += 1
                 continue
-
+                
             if char == '.':
                 dots = ''
                 while i < n and line[i] == '.':
@@ -528,7 +593,7 @@ def local_fallback_split(raw_text: str, max_segs: int) -> list[str]:
                     parts.append("".join(current).strip())
                     current = []
                 continue
-
+                
             if char == '…':
                 dots = ''
                 while i < n and line[i] == '…':
@@ -539,7 +604,7 @@ def local_fallback_split(raw_text: str, max_segs: int) -> list[str]:
                     parts.append("".join(current).strip())
                     current = []
                 continue
-
+                
             # 标点聚类：吞噬后续连续的标点符号，防止 ？！ 被切碎
             if char in "。！？!?~":
                 current.append(char)
@@ -550,14 +615,15 @@ def local_fallback_split(raw_text: str, max_segs: int) -> list[str]:
                 parts.append("".join(current).strip())
                 current = []
                 continue
-
+                
             current.append(char)
             i += 1
-
+            
         if current and "".join(current).strip():
             parts.append("".join(current).strip())
+            
         sentence_split_lines.extend(parts)
-
+        
     # 后处理智能合并：将孤立的纯标点或颜文字向前合并到上一个有效文本段
     merged_parts = []
     for p in sentence_split_lines:
@@ -565,10 +631,10 @@ def local_fallback_split(raw_text: str, max_segs: int) -> list[str]:
             merged_parts[-1] += p  # 向前粘连
         else:
             merged_parts.append(p)
-
+            
     balanced = merge_segments_balancing_brackets(merged_parts)
     split_result = split_segments_at_bracket_boundaries(balanced, max_segments=max_segs)
-
+    
     # 防止括号切分机制将带括号的短颜文字 (如 "(>_<)") 强行剥离成独立段
     final_merged = []
     for seg in split_result:
@@ -576,8 +642,9 @@ def local_fallback_split(raw_text: str, max_segs: int) -> list[str]:
             final_merged[-1] += seg  # 强行粘回上一段
         else:
             final_merged.append(seg)
-
+            
     return final_merged
+
 
 def get_segments_or_fallback(
     raw_text: str,
@@ -591,29 +658,29 @@ def get_segments_or_fallback(
         max_segs = int(max_segments) if max_segments is not None else 0
     except (ValueError, TypeError):
         max_segs = 0
-
+        
     cleaned_raw = strip_thinking_content(raw_text)
     if not cleaned_raw:
         return []
-
+        
     norm_text = normalize_response_text_for_key(cleaned_raw)
     if not norm_text:
         return []
-
+        
     exact_hash = hash_normalized_text(cleaned_raw)
     if cache and exact_hash in cache:
         return cache[exact_hash]
-
+        
     if cache and hash_to_norm:
         cache_norm_map = {}
         for h, segs in cache.items():
             if h in hash_to_norm and segs:
                 cache_norm_map[hash_to_norm[h]] = segs
-
+                
         remaining = norm_text.strip()
         assembled_segs = []
         matched_any = False
-
+        
         while remaining:
             best_match_len = 0
             best_match_segs = None
@@ -624,15 +691,15 @@ def get_segments_or_fallback(
                         if key_len == len(remaining) or remaining[key_len] == ' ':
                             best_match_len = key_len
                             best_match_segs = segs
-
+                            
             if best_match_segs:
                 assembled_segs.extend(best_match_segs)
                 remaining = remaining[best_match_len:].strip()
                 matched_any = True
             else:
                 break
-
+                
         if matched_any and not remaining:
             return assembled_segs
-
+            
     return local_fallback_split(cleaned_raw, max_segs)
