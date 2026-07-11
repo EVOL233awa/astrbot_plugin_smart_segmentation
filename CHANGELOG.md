@@ -4,6 +4,15 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.0.1] - 2026-07-12
+
+### Changed
+- **非自然语言判定与本地兜底顺序重构**：调整守卫判定优先级，使 Markdown 段落级解析（`is_markdown_heavy`）先于非自然语言判定执行。同时，对非自然语言判定逻辑进行加固，引入 JSON 结构化解析尝试、提高特殊字符阈值至 15%，并新增中文汉字密度判定（汉字占比超 10% 绝不判定为非自然），消除结构化文档退化为整条发送的逻辑缺陷。
+- **颜文字与纯标点判定优化**：在判定器入口引入中文字符排他性检测。含有中文字符的任意短句均不再判定为颜文字，消除了由于颜文字过度召回而导致正常中文分段语义被异常向前合并粘连的问题。
+
+### Fixed
+- **中文括号切分失效缺陷修复**：通过引入限制在 ASCII 范围的 `is_ascii_alnum` 辅助判定函数，替换原 Python 内置的 `str.isalnum()` 逻辑，解决了括号前紧邻中文字符（如“了（”）被误判定为代码函数调用而导致跳过括号切分的问题。
+- **通用 Markdown 代码块过度抹除修复**：修改 `PROTOCOL_ARTIFACTS_RE` 正则表达式，移除了对通用 ``` 闭合代码块的拦截，仅保留专用伪影拦截，防止位于系统最上游的数据清洗步骤将用户可见的合法代码块提前过滤吞噬。
 
 ## [1.0.0] - 2026-07-12
 
@@ -28,3 +37,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - **会话状态机残留清理**：在贪婪拼接匹配到缓存后即刻执行销毁消费，避免在多轮 Tool Call 并发场景下造成分段残留。
 
 [1.0.0]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.0.0
+[1.0.1]: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation/releases/tag/v1.0.1
