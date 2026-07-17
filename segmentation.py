@@ -64,11 +64,11 @@ def is_kaomoji_or_pure_punct(text: str) -> bool:
         return True
         
     # 3. 常见颜文字特征检测 (排除了中文后，再检测连续符号)
-    if len(text) <= 10 and re.search(r"[><^°¯\*_\-\|/\\]{2,}", text):
+    if len(text) <= 10 and re.search(r"[><☆✨ㅠ^°¯\*_\-\|/\\]{2,}", text):
         return True
         
     # 4. 经典字母颜文字白名单
-    if text.lower() in ["qwq", "qaq", "ovo", "uwu", "orz", "t_t", "q_q", "x_x", "tv_t"]:
+    if text.lower() in ["qwq", "awa", "qaq", "ovo", "uwu", "orz", "t_t", "q_q", "x_x", "tv_t"]:
         return True
         
     return False
@@ -120,6 +120,37 @@ def is_non_natural_language(text: str) -> bool:
         return True
         
     return False
+
+
+def safe_escape_segments(segments: list[str]) -> list[str]:
+    """
+    高选择性安全后处理器：
+    只对自然语言段落中的半角尖括号进行转义，严格绕过代码块、JSON、Markdown 语法标记，
+    在保障原本特性的前提下，完美解决尖括号物理吞噬问题。
+    """
+    processed_segments = []
+    for seg in segments:
+        stripped = seg.strip()
+        
+        # 1. 如果是非自然语言段（代码块、纯 JSON、配置字段等），严格保持原文原样
+        if is_non_natural_language(seg) or "```" in stripped:
+            processed_segments.append(seg)
+            continue
+            
+        # 2. 如果是 Markdown 块引用（以 > 开头），保留开头的 Markdown 语法标记，仅转义后续文本内容
+        if stripped.startswith(">"):
+            boundary = seg.find(">")
+            header = seg[:boundary + 1]
+            body = seg[boundary + 1:]
+            escaped_body = body.replace("<", "＜").replace(">", "＞")
+            processed_segments.append(header + escaped_body)
+            continue
+            
+        # 3. 针对常规自然语言（如带有颜文字的消息段），执行安全替换
+        escaped_seg = seg.replace("<", "＜").replace(">", "＞")
+        processed_segments.append(escaped_seg)
+        
+    return processed_segments
 
 
 def is_markdown_heavy(text: str) -> bool:
@@ -474,7 +505,7 @@ def parse_segments_from_model_output(
         else:
             final_merged.append(seg)
             
-    return final_merged
+    return safe_escape_segments(final_merged)
 
 
 def calculate_send_delay(
@@ -504,12 +535,12 @@ def local_fallback_split(raw_text: str, max_segs: int) -> list[str]:
         paragraphs = re.split(r'\n[ \t]*\n', raw_text.strip())
         segments = [p.strip() for p in paragraphs if p.strip()]
         if not segments:
-            return [raw_text.strip()]
+            return safe_escape_segments([raw_text.strip()])
         if max_segs > 0 and len(segments) > max_segs:
             head = segments[: max_segs - 1]
             tail = "\n\n".join(segments[max_segs - 1 :])
             segments = head + [tail]
-        return segments
+        return safe_escape_segments(segments)
         
     # 2. 整体非自然语言检测 (纯 JSON/纯代码)，直接整段发送 (已强化 json 解析和低汉字密度过滤校验)
     if is_non_natural_language(raw_text):
@@ -643,7 +674,7 @@ def local_fallback_split(raw_text: str, max_segs: int) -> list[str]:
         else:
             final_merged.append(seg)
             
-    return final_merged
+    return safe_escape_segments(final_merged)
 
 
 def get_segments_or_fallback(
@@ -669,7 +700,7 @@ def get_segments_or_fallback(
         
     exact_hash = hash_normalized_text(cleaned_raw)
     if cache and exact_hash in cache:
-        return cache[exact_hash]
+        return safe_escape_segments(cache[exact_hash])
         
     if cache and hash_to_norm:
         cache_norm_map = {}
@@ -700,6 +731,6 @@ def get_segments_or_fallback(
                 break
                 
         if matched_any and not remaining:
-            return assembled_segs
+            return safe_escape_segments(assembled_segs)
             
     return local_fallback_split(cleaned_raw, max_segs)
