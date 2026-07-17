@@ -4,6 +4,14 @@ All notable changes to the AstrBot Plugin Ecosystem (Smart Segmentation) will be
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+## [1.0.2] - 2026-07-17
+
+### Added
+- **高选择性安全后处理器**：在分段最终输出网关层引入高选择性安全转义模块。仅对普通自然语言与颜文字段落中的半角尖括号进行全角化转义（`<` 与 `>` 转换为 `＜` 与 `＞`）。设计了严格的语法逃逸边界，自动避让 Markdown 代码块、完整 JSON/YAML 配置文件片段、以及 Markdown 块引用标记（`>`），确保原有格式与代码可运行性不受任何影响。
+
+### Fixed
+- **QQ/微信平台尖括号（颜文字）物理吞噬与截断修复**：解决由于消息中含有 `>_<` 或 `<` 后续接有 `>` 等符号，导致 QQ、微信等下游协议端或客户端 HTML 标签过滤器错误将其识别为 HTML 标签并整段物理吞噬、截断的缺陷。
+
 ## [1.0.1] - 2026-07-12
 
 ### Changed
