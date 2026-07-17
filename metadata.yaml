@@ -1,8 +1,8 @@
 name: astrbot_plugin_smart_segmentation_maintained
 display_name: 智能分段 (个人维护版)
 desc: 智能分段插件个人维护版。深度适配本地轻量小模型（如 Qwen3.5-2B），解决小模型格式崩溃与复读幻觉。
-version: v1.0.0
-author: 薄暝 (原作者) / EVOL2333awa (维护者)
+version: v1.0.2
+author: 薄暝 (原作者) / EVOL233awa (维护者)
 repo: https://github.com/EVOL233awa/astrbot_plugin_smart_segmentation
 astrbot_version: ">=4.16,<5"
 tags:
